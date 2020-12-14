@@ -27,58 +27,70 @@ import {
 	transactions,
 } from '@amxx/graphprotocol-utils'
 
+function fetchToken(registry: TokenRegistry, id: BigInt): Token {
+	let tokenid = registry.id.concat('-').concat(id.toHex())
+	let token = Token.load(tokenid)
+	if (token == null) {
+		token = new Token(tokenid)
+		token.registry    = registry.id
+		token.identifier  = id
+		token.totalSupply = constants.BIGINT_ZERO
+	}
+	return token as Token
+}
 
+function fetchBalance(token: Token, account: Account): Balance {
+	let balanceid = token.id.concat('-').concat(account.id)
+	let balance = Balance.load(balanceid)
+	if (balance == null) {
+		balance = new Balance(balanceid)
+		balance.token   = token.id
+		balance.account = account.id
+		balance.value   = constants.BIGINT_ZERO
+	}
+	return balance as Balance
+}
 
 function registerTransfer(
 	event:    ethereum.Event,
 	suffix:   String,
-	operator: Address,
-	from:     Address,
-	to:       Address,
-	token:    BigInt,
+	registry: TokenRegistry,
+	operator: Account,
+	from:     Account,
+	to:       Account,
+	id:       BigInt,
 	value:    BigInt)
 : void
 {
+	let token = fetchToken(registry, id)
 	let ev = new Transfer(events.id(event).concat(suffix))
 	ev.transaction = transactions.log(event).id
 	ev.timestamp   = event.block.timestamp
-	ev.token       = event.address.toHex().concat('-').concat(token.toHex())
-	ev.operator    = operator.toHex()
-	ev.from        = from.toHex()
-	ev.to          = to.toHex()
+	ev.token       = token.id
+	ev.operator    = operator.id
+	ev.from        = from.id
+	ev.to          = to.id
 	ev.value       = value
 
-	if (ev.from != constants.ADDRESS_ZERO) {
-		let id      = ev.token.concat('-').concat(ev.from)
-		let balance = Balance.load(id)
-		// first time balance is seen
-		if (balance == null) {
-			let balance     = new Balance(id)
-			balance.token   = ev.token
-			balance.account = ev.from
-			balance.value   = IERC1155.bind(event.address).balanceOf(from, token)
-		} else {
-			balance.value   = integers.decrement(balance.value, value)
-		}
+	if (from.id == constants.ADDRESS_ZERO) {
+		token.totalSupply = integers.increment(token.totalSupply, value)
+	} else {
+		let balance = fetchBalance(token, from)
+		balance.value = integers.decrement(balance.value, value)
 		balance.save()
-		ev.fromBalance = id
+		ev.fromBalance = balance.id
 	}
 
-	if (ev.to != constants.ADDRESS_ZERO) {
-		let id      = ev.token.concat('-').concat(ev.to)
-		let balance = Balance.load(id)
-		// first time balance is seen
-		if (balance == null) {
-			let balance     = new Balance(id)
-			balance.token   = ev.token
-			balance.account = ev.to
-			balance.value   = IERC1155.bind(event.address).balanceOf(from, token)
-		} else {
-			balance.value   = integers.increment(balance.value, value)
-		}
+	if (to.id == constants.ADDRESS_ZERO) {
+		token.totalSupply = integers.decrement(token.totalSupply, value)
+	} else {
+		let balance = fetchBalance(token, to)
+		balance.value = integers.increment(balance.value, value)
 		balance.save()
-		ev.toBalance = id
+		ev.toBalance = balance.id
 	}
+
+	token.save()
 	ev.save()
 }
 
@@ -93,12 +105,16 @@ export function handleTransferSingle(event: TransferSingleEvent): void
 	from.save()
 	to.save()
 
-	let token = new Token(registry.id.concat('-').concat(event.params.id.toHex()))
-	token.registry   = registry.id
-	token.identifier = event.params.id
-	token.save()
-
-	registerTransfer(event, "", event.params.operator, event.params.from, event.params.to, event.params.id, event.params.value)
+	registerTransfer(
+		event,
+		"",
+		registry,
+		operator,
+		from,
+		to,
+		event.params.id,
+		event.params.value
+	)
 }
 
 export function handleTransferBatch(event: TransferBatchEvent): void
@@ -116,12 +132,16 @@ export function handleTransferBatch(event: TransferBatchEvent): void
 	let values = event.params.values
 	for (let i = 0;  i < ids.length; ++i)
 	{
-		let token = new Token(registry.id.concat('-').concat(ids[i].toHex()))
-		token.registry   = registry.id
-		token.identifier = ids[i]
-		token.save()
-
-		registerTransfer(event, "-".concat(i.toString()), event.params.operator, event.params.from, event.params.to, ids[i], values[i])
+		registerTransfer(
+			event,
+			"-".concat(i.toString()),
+			registry,
+			operator,
+			from,
+			to,
+			ids[i],
+			values[i]
+		)
 	}
 }
 
@@ -129,8 +149,9 @@ export function handleTransferBatch(event: TransferBatchEvent): void
 export function handleURI(event: URIEvent): void
 {
 	let registry = new TokenRegistry(event.address.toHex())
-	let token    = new Token(registry.id.concat('-').concat(event.params.id.toHex()))
-	token.URI = event.params.value
 	registry.save()
+
+	let token = fetchToken(registry, event.params.id)
+	token.URI = event.params.value
 	token.save()
 }
